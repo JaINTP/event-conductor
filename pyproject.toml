@@ -1,0 +1,32 @@
+[project]
+name = "event-conductor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jai Brown", email = "jaintp.dev@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "coverage-badge>=1.1.2",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.2",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.coverage.run]
+omit = [
+    'tests/*'
+]
+
+[tool.pytest.ini_options]
+addopts = "--cov=eventbus --cov-report term-missing"
