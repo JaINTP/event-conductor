@@ -1,31 +1,59 @@
-# event_conductor.py
+"""Event conductor module.
+
+This module provides the core event handling functionality through the EventConductor class.
+It implements a feature-rich event bus with support for prioritized subscriptions,
+wildcard/regex pattern matching, middleware hooks, and event sourcing.
+
+Classes:
+    SingletonMeta: Metaclass for singleton pattern implementation
+    PrioritizedCallback: Wrapper class for callbacks with priority
+    EventConductor: Main event bus implementation
+"""
 
 import asyncio
+import heapq
 import inspect
 import logging
 import re
-import heapq
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import (
-    Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, Union
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Pattern,
+    Tuple,
+    Union,
 )
+
 from pydantic import ValidationError
 
 from .base_event import BaseEvent
 
 
 class SingletonMeta(type):
+    """Metaclass that implements the singleton pattern.
+
+    This metaclass ensures only one instance of a class is created and subsequent
+    calls return the same instance. Thread-safe implementation.
+
+    Attributes:
+        _instances (dict): Dictionary storing singleton instances
     """
-    A threadsafe singleton metaclass that returns a single instance
-    of any class using it.
-    """
+
     _instances = {}
 
     def __call__(cls, *args, **kwargs):
-        """
-        Return the singleton instance if it exists.
-        Otherwise, create and store a new one.
+        """Return singleton instance or create new if none exists.
+
+        Args:
+            *args: Variable length argument list
+            **kwargs: Arbitrary keyword arguments
+
+        Returns:
+            The singleton instance of the class
         """
         if cls not in cls._instances:
             cls._instances[cls] = super().__call__(*args, **kwargs)
@@ -40,26 +68,37 @@ EventCallback = Callable[[BaseEvent], None]
 
 @dataclass(order=True)
 class PrioritizedCallback:
+    """Wrapper for callbacks with priority for heap-based ordering.
+
+    This class wraps callback functions with a priority value for use in a min-heap.
+    Lower priority values are processed first by default.
+
+    Attributes:
+        priority (int): Priority value for ordering callbacks
+        callback (EventCallback): The wrapped callback function
     """
-    Wraps a callback with a priority so we can store them
-    in a min-heap (using heapq). 
-    By default, lower 'priority' means 'pops first'.
-    We'll just invert or sort in reverse if we want 
-    higher values to be considered "higher priority."
-    """
+
     priority: int
     callback: EventCallback = field(compare=False)
 
 
 class EventConductor(metaclass=SingletonMeta):
-    """
-    A multi-featured event bus that includes:
-    - Priority subscriptions
-    - Wildcard/regex subscriptions
-    - Global 'before' and 'after' hooks (middleware)
-    - Sync vs. async publishing
-    - Event sourcing (storing and replaying events)
-    - Correlation IDs (ensured by BaseEvent)
+    """Feature-rich event bus implementation.
+
+    Provides a comprehensive event handling system with:
+    - Priority-based subscriptions
+    - Wildcard/regex pattern matching for event names
+    - Global before and after hooks (middleware)
+    - Synchronous and asynchronous event publishing
+    - Event sourcing capabilities
+    - Correlation ID tracking
+
+    Attributes:
+        logger: Logger instance for this class
+        include_traceback (bool): Whether to include full tracebacks in error logs
+        enable_priorities (bool): Whether to use priority-based callback ordering
+        enable_wildcards (bool): Whether to allow regex pattern subscriptions
+        sync_by_default (bool): Whether to use synchronous publishing by default
     """
 
     def __init__(
@@ -69,21 +108,21 @@ class EventConductor(metaclass=SingletonMeta):
         enable_wildcards: bool = True,
         sync_by_default: bool = False
     ):
-        """
-        :param include_traceback: If True, we'll use `logger.exception()` for 
-                                  full tracebacks; otherwise, `logger.error()`.
-        :param enable_priorities: If True, we handle subscriber priority via a heap.
-        :param enable_wildcards:  If True, we allow regex-based subscriptions.
-        :param sync_by_default:   If True, calls to publish() will block 
-                                  instead of dispatching asynchronously.
+        """Initialize the EventConductor.
+
+        Args:
+            include_traceback: If True, use logger.exception() for full tracebacks
+            enable_priorities: If True, handle subscriber priority via heap
+            enable_wildcards: If True, allow regex-based subscriptions
+            sync_by_default: If True, publish() calls block by default
         """
         self.logger = logging.getLogger(__name__)
         self.logger.propagate = True
 
         self.include_traceback = include_traceback
         self.enable_priorities = enable_priorities
-        self.enable_wildcards  = enable_wildcards
-        self.sync_by_default   = sync_by_default
+        self.enable_wildcards = enable_wildcards
+        self.sync_by_default = sync_by_default
 
         self._exact_subscribers: Dict[str, List[PrioritizedCallback]] = defaultdict(list)
         self._wildcard_subscribers: List[Tuple[Pattern, PrioritizedCallback]] = []
@@ -96,29 +135,30 @@ class EventConductor(metaclass=SingletonMeta):
         self._event_store: List[BaseEvent] = []
 
     def add_before_hook(self, hook: Callable[[BaseEvent], Optional[BaseEvent]]) -> None:
-        """
-        Add a function that runs before publishing events.
-        The hook can modify the event (return the new event),
-        or return None to keep it unchanged.
+        """Add a pre-publish hook function.
+
+        Args:
+            hook: Function that runs before publishing events. Can modify the event
+                by returning a new one, or return None to keep unchanged.
         """
         self._before_hooks.append(hook)
 
     def add_after_hook(self, hook: Callable[[BaseEvent, Optional[Exception]], None]) -> None:
-        """
-        Add a function that runs after publishing events, 
-        receiving the event and the first raised exception (if any).
+        """Add a post-publish hook function.
+
+        Args:
+            hook: Function that runs after publishing events, receiving the event
+                and any exception that occurred during publishing.
         """
         self._after_hooks.append(hook)
 
     async def subscribe(self, event_name: str, callback: EventCallback, priority: int = 0) -> None:
-        """
-        Subscribe a callback to an event name.
-        If wildcard subscriptions are enabled and event_name 
-        is recognized as a regex pattern, we store it separately.
+        """Subscribe a callback to an event name.
 
-        :param event_name: The event name or pattern (if enable_wildcards=True).
-        :param callback:   The function or coroutine to invoke.
-        :param priority:   Higher means higher priority (if enable_priorities).
+        Args:
+            event_name: Event name or regex pattern to subscribe to
+            callback: Function or coroutine to call when event occurs
+            priority: Priority value for callback ordering (higher = higher priority)
         """
         pc = PrioritizedCallback(priority=priority, callback=callback)
 
@@ -130,9 +170,11 @@ class EventConductor(metaclass=SingletonMeta):
                 heapq.heappush(self._exact_subscribers[event_name], pc)
 
     async def unsubscribe(self, event_name: str, callback: EventCallback) -> None:
-        """
-        Unsubscribe a callback from an event name or pattern.
-        We'll do a linear search to remove it. 
+        """Remove a callback subscription.
+
+        Args:
+            event_name: Event name or pattern to unsubscribe from
+            callback: The callback function to remove
         """
         if self.enable_wildcards and self._is_regex_pattern(event_name):
             pattern = re.compile(event_name)
@@ -151,17 +193,19 @@ class EventConductor(metaclass=SingletonMeta):
         event: Union[Dict[str, Any], BaseEvent],
         sync: Optional[bool] = None
     ) -> None:
-        """
-        Publish an event to all subscribed callbacks.
+        """Publish an event to all subscribed callbacks.
 
-        :param event: Either a dict (parsed into BaseEvent) or an BaseEvent instance.
-        :param sync:  If None, uses `sync_by_default`. If True, runs sync/blocking 
-                    in sequence; if False, schedules them concurrently via tasks.
+        Args:
+            event: Event data as dict or BaseEvent instance
+            sync: If True, run callbacks synchronously; if False, run concurrently;
+                if None, use sync_by_default setting
+
+        Raises:
+            ValidationError: If event dict cannot be converted to BaseEvent
         """
         if sync is None:
             sync = self.sync_by_default
 
-        # Convert dict to BaseEvent if needed
         if isinstance(event, dict):
             try:
                 event = BaseEvent.model_validate(event)
@@ -169,28 +213,20 @@ class EventConductor(metaclass=SingletonMeta):
                 self._log_error("Validation error constructing event object", exc)
                 return
 
-        # Ensure correlation/timestamp are set
         event.ensure_correlation_id()
 
-        # Capture the original event_name for subscription lookup
         original_event_name = event.event_name
-
-        # Event Sourcing: store the event
         self._event_store.append(event)
 
-        # Run "before" hooks (they might alter the event_name)
         for hook in self._before_hooks:
             updated = hook(event)
             if updated is not None:
                 event = updated
 
-        # The event_name may have changed, but we still look up subscribers by the original
         mutated_event_name = event.event_name
 
-        # Collect callbacks (exact + wildcard)
         callbacks = []
 
-        # Exact matches
         async with self._locks[original_event_name]:
             if original_event_name in self._exact_subscribers:
                 temp_list = []
@@ -198,38 +234,31 @@ class EventConductor(metaclass=SingletonMeta):
                     temp_list.append(
                         heapq.heappop(self._exact_subscribers[original_event_name])
                     )
-                # Put them back
                 for pc in temp_list:
                     heapq.heappush(self._exact_subscribers[original_event_name], pc)
                 callbacks.extend(temp_list)
 
-        # Wildcard matches (match the final event name, or original if you prefer)
         for (pattern, pc) in self._wildcard_subscribers:
             if pattern.match(mutated_event_name):
                 callbacks.append(pc)
 
-        # Sort them by priority (highest first) if enabled
         if self.enable_priorities:
             callbacks.sort(reverse=True, key=lambda pc: pc.priority)
 
-        # Dispatch
         exceptions = []
 
         if sync:
-            # Process each callback in sequence (blocking) within this event loop
             for pc in callbacks:
                 cb = pc.callback
                 try:
                     if inspect.iscoroutinefunction(cb):
-                        # Since we're already inside an async function, we can just await
                         await cb(event)
                     else:
-                        cb(event)  # purely sync call
+                        cb(event)
                 except Exception as exc:
                     exceptions.append(exc)
                     self._log_error(f"Error in synchronous callback: {cb}", exc)
         else:
-            # Launch all callbacks concurrently
             tasks = []
             for pc in callbacks:
                 cb = pc.callback
@@ -243,7 +272,6 @@ class EventConductor(metaclass=SingletonMeta):
                 if isinstance(r, Exception):
                     exceptions.append(r)
 
-        # Pass the first exception (if any) to after_hooks
         exc_obj = exceptions[0] if exceptions else None
         for hook in self._after_hooks:
             hook(event, exc_obj)
@@ -254,12 +282,12 @@ class EventConductor(metaclass=SingletonMeta):
         to_index: Optional[int] = None,
         sync: bool = True
     ) -> None:
-        """
-        Replay previously published events from the event store.
+        """Replay stored events.
 
-        :param from_index: The start index within the event store.
-        :param to_index:   The end index (exclusive). If None, goes to the end.
-        :param sync:       Replay in sync mode (blocking) by default to keep order consistent.
+        Args:
+            from_index: Starting index in event store
+            to_index: Ending index (exclusive) in event store
+            sync: Whether to replay events synchronously
         """
         if to_index is None:
             to_index = len(self._event_store)
@@ -268,17 +296,33 @@ class EventConductor(metaclass=SingletonMeta):
             await self.publish(ev, sync=sync)
 
     async def _invoke_async(self, callback: EventCallback, event: BaseEvent) -> None:
-        """Helper to run async callbacks safely."""
+        """Run async callback safely.
+
+        Args:
+            callback: Async callback to execute
+            event: Event to pass to callback
+
+        Raises:
+            Exception: Any exception raised by callback
+        """
         try:
-            await callback(event)
+            if inspect.iscoroutinefunction(callback):
+                await callback(event)
+            else:
+                callback(event)
         except Exception as exc:
             self._log_error(f"Error in async callback: {callback}", exc)
             raise
 
     async def _invoke_sync(self, callback: EventCallback, event: BaseEvent) -> None:
-        """
-        Helper to run sync callbacks in a thread executor
-        so they don't block the event loop.
+        """Run sync callback in thread executor.
+
+        Args:
+            callback: Sync callback to execute
+            event: Event to pass to callback
+
+        Raises:
+            Exception: Any exception raised by callback
         """
         loop = asyncio.get_running_loop()
         try:
@@ -288,8 +332,11 @@ class EventConductor(metaclass=SingletonMeta):
             raise
 
     def _log_error(self, msg: str, exc: Exception) -> None:
-        """
-        Log an error with or without full traceback based on `include_traceback`.
+        """Log an error with optional traceback.
+
+        Args:
+            msg: Error message to log
+            exc: Exception that occurred
         """
         if self.include_traceback:
             self.logger.exception(msg)
@@ -297,8 +344,13 @@ class EventConductor(metaclass=SingletonMeta):
             self.logger.error(f"{msg}: {exc}")
 
     def _is_regex_pattern(self, event_name: str) -> bool:
-        """
-        Naive check: if it contains typical regex meta chars, treat it as a pattern.
+        """Check if event name contains regex metacharacters.
+
+        Args:
+            event_name: Event name to check
+
+        Returns:
+            bool: True if event_name contains regex metacharacters
         """
         special_chars = ['*', '.', '^', '$', '?', '+', '{', '}', '[', ']', '\\', '|']
         return any(ch in event_name for ch in special_chars)
