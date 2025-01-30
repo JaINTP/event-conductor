@@ -1,7 +1,7 @@
 [project]
 name = "event-conductor"
-version = "0.1.1"
-description = "Add your description here"
+version = "0.1.2"
+description = "Event Conductor is a powerful Python library designed for event-driven architectures."
 readme = "README.md"
 authors = [
     { name = "Jai Brown", email = "jaintp.dev@gmail.com" }
